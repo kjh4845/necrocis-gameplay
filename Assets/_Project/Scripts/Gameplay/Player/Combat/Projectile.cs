@@ -14,6 +14,7 @@ namespace Necrocis
         private const int HitBufferSize = 8;
         private const int ExplosionBufferSize = 24;
         private const int ObstacleHitBufferSize = 12;
+        private const string ExplosionVisualPoolName = "Projectile.ExplosiveBloodCellVisual";
 
         [SerializeField] private float speed = 15f;
         [SerializeField] private float lifeTime = 3f;
@@ -43,6 +44,7 @@ namespace Necrocis
         private float launchRange;
         private Vector3 activeBaseScale = Vector3.one;
         private bool boomerangRehitResetDone;
+        private int boomerangPassHitCount;
         private readonly Collider[] hitBuffer = new Collider[HitBufferSize];
         private readonly Collider[] explosionBuffer = new Collider[ExplosionBufferSize];
         private readonly RaycastHit[] obstacleHitBuffer = new RaycastHit[ObstacleHitBufferSize];
@@ -85,6 +87,7 @@ namespace Necrocis
             returning = false;
             splitTriggered = false;
             boomerangRehitResetDone = false;
+            boomerangPassHitCount = 0;
             launchRange = Mathf.Max(0.05f, range);
             pulseScaleModeInitialized = false;
             pulseRangeBudget = launchRange;
@@ -154,11 +157,12 @@ namespace Necrocis
 
         private void Update()
         {
+            float deltaTime = Time.deltaTime;
             if (spawnKind == SpawnKind.Normal && itemEffects != null)
             {
                 if (itemEffects.HasHomingCell)
                 {
-                    ApplyHoming(Time.deltaTime);
+                    ApplyHoming(deltaTime);
                 }
 
                 if (itemEffects.HasRefluxOrgan)
@@ -167,16 +171,18 @@ namespace Necrocis
                 }
             }
 
-            Vector3 step = moveDirection * currentSpeed * Time.deltaTime;
-            if (!TryReflectFromObstacleCollider(ref step))
+            float stepDistance = currentSpeed * deltaTime;
+            Vector3 step = moveDirection * stepDistance;
+            bool reflected = TryReflectFromObstacleCollider(ref step);
+            if (!reflected)
             {
-                TryReflectFromBiome(ref step);
+                reflected = TryReflectFromBiome(ref step);
             }
 
             Vector3 nextPosition = transform.position + step;
             nextPosition.y = flightHeight;
             transform.position = nextPosition;
-            traveledDistance += step.magnitude;
+            traveledDistance += reflected ? step.magnitude : stepDistance;
 
             if (spawnKind == SpawnKind.Normal && itemEffects != null && itemEffects.HasPulseBullet)
             {
@@ -237,15 +243,25 @@ namespace Necrocis
                 return;
             }
 
+            bool isBoomerang = spawnKind == SpawnKind.Normal && itemEffects != null && itemEffects.HasRefluxOrgan;
+            if (isBoomerang && boomerangPassHitCount >= itemEffects.GetBoomerangMaxHitsPerPass())
+            {
+                return;
+            }
+
             int enemyId = enemy.GetInstanceID();
             if (!hitEnemyIds.Add(enemyId))
             {
                 return;
             }
 
-            bool isBoomerang = spawnKind == SpawnKind.Normal && itemEffects != null && itemEffects.HasRefluxOrgan;
             float appliedDamage = damage;
-            if (isBoomerang)
+            if (itemEffects != null && itemEffects.HasPiercingMucus && !isBoomerang)
+            {
+                appliedDamage *= itemEffects.GetPiercingHitDamageMultiplier(currentHitCount);
+            }
+
+            if (isBoomerang && returning)
             {
                 appliedDamage *= itemEffects.GetBoomerangRepeatHitDamageMultiplier();
             }
@@ -256,7 +272,12 @@ namespace Necrocis
             }
 
             currentHitCount++;
+            if (isBoomerang)
+            {
+                boomerangPassHitCount++;
+            }
             enemy.TakeDamage(appliedDamage);
+            CombatVfx.PlayProjectileImpact(transform.position, moveDirection);
 
             if (itemEffects != null)
             {
@@ -289,7 +310,7 @@ namespace Necrocis
                 return;
             }
 
-            float radius = Mathf.Max(0.05f, hitCheckRadius);
+            float radius = GetScaledHitCheckRadius();
             Vector3 hitCenter = transform.position;
             hitCenter.y += hitCheckHeightOffset;
             float halfHeight = Mathf.Max(0.05f, hitCheckVerticalHalfHeight);
@@ -404,6 +425,7 @@ namespace Necrocis
             {
                 // Allow one more hit pass while returning to the player.
                 hitEnemyIds.Clear();
+                boomerangPassHitCount = 0;
                 boomerangRehitResetDone = true;
             }
         }
@@ -484,7 +506,7 @@ namespace Necrocis
             }
 
             Vector3 direction = step / stepDistance;
-            float probeRadius = Mathf.Max(0.05f, hitCheckRadius * 0.65f);
+            float probeRadius = Mathf.Max(0.05f, GetScaledHitCheckRadius() * 0.65f);
             int hitCount = Physics.SphereCastNonAlloc(
                 transform.position,
                 probeRadius,
@@ -593,6 +615,20 @@ namespace Necrocis
             transform.localScale = activeBaseScale * scaleRatio;
         }
 
+        private float GetScaledHitCheckRadius()
+        {
+            float defaultSize = Mathf.Max(
+                0.0001f,
+                Mathf.Max(
+                    Mathf.Abs(defaultLocalScale.x),
+                    Mathf.Max(Mathf.Abs(defaultLocalScale.y), Mathf.Abs(defaultLocalScale.z))));
+            float currentSize = Mathf.Max(
+                Mathf.Abs(transform.localScale.x),
+                Mathf.Max(Mathf.Abs(transform.localScale.y), Mathf.Abs(transform.localScale.z)));
+            float scaleRatio = Mathf.Max(0.05f, currentSize / defaultSize);
+            return Mathf.Max(0.05f, hitCheckRadius * scaleRatio);
+        }
+
         private void ApplyExplosionDamage(EnemyController primaryEnemy, float sourceDamage)
         {
             float radius = itemEffects.GetExplosionRadius();
@@ -630,16 +666,16 @@ namespace Necrocis
 
         private static void SpawnExplosionVisual(Vector3 center, float radius)
         {
-            GameObject fx = new GameObject("ExplosiveBloodCellFx");
-            fx.transform.position = new Vector3(center.x, center.y + 0.08f, center.z);
-
-            SpriteRenderer renderer = fx.AddComponent<SpriteRenderer>();
-            renderer.sprite = TextureSpriteCache.GetCircleSprite();
-            renderer.color = new Color(1f, 0.26f, 0.12f, 0.55f);
-            renderer.sortingOrder = 5100;
-
-            fx.transform.localScale = Vector3.one * Mathf.Max(0.2f, radius * 2f);
-            Object.Destroy(fx, 0.2f);
+            Sprite effectSprite = TextureSpriteCache.LoadResourceSprite("ItemEffects/explosive_blood_cell_effect");
+            PlayerItemCombatEffects.SpawnPooledCircleVisual(
+                ExplosionVisualPoolName,
+                "ExplosiveBloodCellFx",
+                new Vector3(center.x, center.y + 0.08f, center.z),
+                Mathf.Max(0.2f, radius * 2f * 0.85f),
+                effectSprite != null ? Color.white : new Color(1f, 0.26f, 0.12f, 0.55f),
+                5100,
+                0.2f,
+                effectSprite);
         }
 
         private float GetRemainingRange()
@@ -686,6 +722,75 @@ namespace Necrocis
     {
         private static Sprite circleSprite;
         private static Material spriteMaterial;
+        private static readonly Dictionary<string, Sprite> ResourceSprites = new Dictionary<string, Sprite>();
+        private static readonly Dictionary<string, Material> ResourceSpriteMaterials = new Dictionary<string, Material>();
+
+        public static Sprite LoadResourceSprite(string resourcePath, float pixelsPerUnit = 100f)
+        {
+            if (string.IsNullOrWhiteSpace(resourcePath))
+            {
+                return null;
+            }
+
+            if (ResourceSprites.TryGetValue(resourcePath, out Sprite cachedSprite))
+            {
+                return cachedSprite;
+            }
+
+            Sprite sprite = Resources.Load<Sprite>(resourcePath);
+            if (sprite == null)
+            {
+                Texture2D texture = Resources.Load<Texture2D>(resourcePath);
+                if (texture != null)
+                {
+                    sprite = Sprite.Create(
+                        texture,
+                        new Rect(0f, 0f, texture.width, texture.height),
+                        new Vector2(0.5f, 0.5f),
+                        Mathf.Max(1f, pixelsPerUnit));
+                    sprite.name = texture.name;
+                }
+            }
+
+            ResourceSprites[resourcePath] = sprite;
+            return sprite;
+        }
+
+        public static float GetUniformScaleForWorldSize(Sprite sprite, float targetWorldSize)
+        {
+            float spriteSize = sprite != null
+                ? Mathf.Max(sprite.bounds.size.x, sprite.bounds.size.y)
+                : 1f;
+            return Mathf.Max(0.01f, targetWorldSize) / Mathf.Max(0.0001f, spriteSize);
+        }
+
+        public static Material GetResourceSpriteMaterial(string resourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(resourcePath))
+            {
+                return GetSpriteMaterial();
+            }
+
+            if (ResourceSpriteMaterials.TryGetValue(resourcePath, out Material cachedMaterial))
+            {
+                return cachedMaterial;
+            }
+
+            Sprite sprite = LoadResourceSprite(resourcePath);
+            Material baseMaterial = GetSpriteMaterial();
+            if (sprite == null || baseMaterial == null)
+            {
+                return baseMaterial;
+            }
+
+            Material material = new Material(baseMaterial)
+            {
+                name = $"Runtime_{sprite.name}_Material",
+                mainTexture = sprite.texture
+            };
+            ResourceSpriteMaterials[resourcePath] = material;
+            return material;
+        }
 
         public static Sprite GetCircleSprite()
         {

@@ -30,6 +30,9 @@ namespace Necrocis
         [SerializeField] private GameDifficulty currentDifficulty = GameDifficulty.Normal;
         [SerializeField] private BiomeType currentBiome = BiomeType.None;
 
+        [Header("성능")]
+        [SerializeField, Min(-1)] private int targetFrameRate = 60;
+
         [Header("보스 부산물 (목) 수집 현황")]
         [SerializeField] private bool hasIntestineRelic = false;  // 장 보스 부산물
         [SerializeField] private bool hasLiverRelic = false;      // 간 보스 부산물
@@ -66,6 +69,14 @@ namespace Necrocis
 
             Instance = this;
             EnsureEventsInitialized();
+            SaveService.EnsureInitialized();
+            if (SaveService.HasActiveSession)
+            {
+                currentDifficulty = SaveService.ActiveDifficulty;
+            }
+            LoadPersistentBossProgress();
+            GameplaySaveCoordinator.EnsureOn(gameObject);
+            Application.targetFrameRate = targetFrameRate > 0 ? targetFrameRate : -1;
             DontDestroyOnLoad(gameObject);
         }
 
@@ -131,6 +142,8 @@ namespace Necrocis
                 case BiomeType.Lung: hasLungRelic = true; break;
             }
 
+            BossProgress.MarkDefeated(biome);
+
             Debug.Log($"[GameManager] {biome} 부산물 획득! (총 {CollectedRelicCount}/4)");
 
             if (HasAllRelics)
@@ -153,6 +166,74 @@ namespace Necrocis
                 BiomeType.Lung => hasLungRelic,
                 _ => false
             };
+        }
+
+        public void ResetBossProgress()
+        {
+            BossProgress.ResetAll();
+            hasIntestineRelic = false;
+            hasLiverRelic = false;
+            hasStomachRelic = false;
+            hasLungRelic = false;
+            intestineEntryCount = 0;
+            liverEntryCount = 0;
+            stomachEntryCount = 0;
+            lungEntryCount = 0;
+            Debug.Log("[GameManager] 보스 클리어 기록을 초기화했습니다.");
+        }
+
+        public void CaptureToSave(RunSaveData run)
+        {
+            if (run == null)
+            {
+                return;
+            }
+
+            run.difficulty = currentDifficulty;
+            run.bosses ??= new BossProgressSaveData();
+            run.bosses.SetDefeated(BiomeType.Intestine, hasIntestineRelic);
+            run.bosses.SetDefeated(BiomeType.Liver, hasLiverRelic);
+            run.bosses.SetDefeated(BiomeType.Stomach, hasStomachRelic);
+            run.bosses.SetDefeated(BiomeType.Lung, hasLungRelic);
+
+            run.world ??= new WorldRunSaveData();
+            run.world.SetEntryCount(BiomeType.Intestine, intestineEntryCount);
+            run.world.SetEntryCount(BiomeType.Liver, liverEntryCount);
+            run.world.SetEntryCount(BiomeType.Stomach, stomachEntryCount);
+            run.world.SetEntryCount(BiomeType.Lung, lungEntryCount);
+        }
+
+        public void RestoreFromSave(RunSaveData run)
+        {
+            if (run == null)
+            {
+                return;
+            }
+
+            currentDifficulty = run.difficulty;
+            currentBiome = run.checkpoint?.biome ?? BiomeType.None;
+            currentState = currentBiome == BiomeType.None ? GameState.InHub : GameState.InBiome;
+
+            BossProgressSaveData bosses = run.bosses ?? new BossProgressSaveData();
+            hasIntestineRelic = bosses.intestineDefeated;
+            hasLiverRelic = bosses.liverDefeated;
+            hasStomachRelic = bosses.stomachDefeated;
+            hasLungRelic = bosses.lungDefeated;
+
+            WorldRunSaveData world = run.world ?? new WorldRunSaveData();
+            intestineEntryCount = world.GetEntryCount(BiomeType.Intestine);
+            liverEntryCount = world.GetEntryCount(BiomeType.Liver);
+            stomachEntryCount = world.GetEntryCount(BiomeType.Stomach);
+            lungEntryCount = world.GetEntryCount(BiomeType.Lung);
+            OnGameStateChanged?.Invoke(currentState);
+        }
+
+        private void LoadPersistentBossProgress()
+        {
+            hasIntestineRelic |= BossProgress.IsDefeated(BiomeType.Intestine);
+            hasLiverRelic |= BossProgress.IsDefeated(BiomeType.Liver);
+            hasStomachRelic |= BossProgress.IsDefeated(BiomeType.Stomach);
+            hasLungRelic |= BossProgress.IsDefeated(BiomeType.Lung);
         }
 
         /// <summary>

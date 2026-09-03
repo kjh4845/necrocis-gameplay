@@ -23,6 +23,9 @@ namespace Necrocis
         [Header("Tile Defaults")]
         public List<TileTypeMapping> tileMappings = new List<TileTypeMapping>();
 
+        [Header("Exterior Backdrop")]
+        public BiomeExteriorBackdropConfig exteriorBackdrop = new BiomeExteriorBackdropConfig();
+
         [Header("Object Spawn Area Padding")]
         public int marginLeft;
         public int marginRight;
@@ -122,6 +125,27 @@ namespace Necrocis
     }
 
     [System.Serializable]
+    public class BiomeExteriorBackdropConfig
+    {
+        public bool enabled;
+        public Sprite sprite;
+        public Color tint = Color.white;
+        [Range(0f, 1f)] public float opacity = 0.82f;
+        [Tooltip("배경 이미지 뒤에 남는 카메라 바탕색")]
+        public Color cameraClearColor = new Color(0.035f, 0.015f, 0.018f, 1f);
+        [Tooltip("플레이 공간보다 충분히 뒤에 배치할 카메라 기준 거리")]
+        [Min(1f)] public float cameraDistance = 50f;
+        [Tooltip("줌이나 화면비 변화 때 이미지 가장자리가 드러나지 않도록 추가로 키우는 배율")]
+        [Range(1f, 2f)] public float overscan = 1.2f;
+        [Tooltip("정적인 벽지처럼 보이지 않게 하는 아주 느린 화면 드리프트 크기")]
+        [Range(0f, 0.1f)] public float driftAmount = 0.015f;
+        [Min(0f)] public float driftSpeed = 0.08f;
+        public int sortingOrder = -32000;
+
+        public bool IsUsable => enabled && sprite != null;
+    }
+
+    [System.Serializable]
     public class BiomeObjectRuleConfig
     {
         public string name = "Object";
@@ -211,6 +235,11 @@ namespace Necrocis
         public float attackCooldown = 1f;
         public int expReward = 10;
 
+        [Header("Contact Damage")]
+        public bool enableContactDamage = true;
+        [Min(0f)] public float contactDamage = 1f;
+        [Min(0f)] public float contactKnockbackDistance = 0.45f;
+
         [Header("Additional Stats")]
         public List<CharacterStatValue> additionalBaseStats = new List<CharacterStatValue>();
 
@@ -233,8 +262,12 @@ namespace Necrocis
         public Vector3 colliderCenter = new Vector3(0f, 0.55f, 0f);
 
         [Header("Sprites - Idle / Move")]
-        public Sprite[] idleSprites;
-        public Sprite[] moveSprites;
+        public Sprite[] idleSprites;           // 기본 방향 / 좌우는 flipX로 처리
+        public Sprite[] idleSpritesUp;         // 상방 대기
+        public Sprite[] idleSpritesDown;       // 하방 대기
+        public Sprite[] moveSprites;           // 기본 방향 / 좌우는 flipX로 처리
+        public Sprite[] moveSpritesUp;         // 상방 이동
+        public Sprite[] moveSpritesDown;       // 하방 이동
 
         [Header("Sprites - Attack")]
         public Sprite[] attackSprites;         // 기본 공격 (좌우는 flipX로 처리)
@@ -306,42 +339,88 @@ namespace Necrocis
         [Header("Layout")]
         public bool useCustomCenter = false;
         public Vector2Int centerGrid = new Vector2Int(150, 150);
-        public Vector2Int arenaSize = new Vector2Int(26, 26);
+        public Vector2Int arenaSize = new Vector2Int(32, 32);
         public int wallThicknessInCells = 1;
-        [Tooltip("안개 벽보다 안쪽으로 봉쇄 경계를 들여놓을 칸 수")]
+        [Tooltip("아레나 외곽보다 안쪽으로 봉쇄 경계를 들여놓을 칸 수")]
         public int lockBoundaryInsetInCells = 1;
-        [Tooltip("안개 벽 안쪽 모서리에서 추가로 진입 트리거를 들여놓을 칸 수")]
+        [Tooltip("아레나 모서리에서 추가로 진입 트리거를 들여놓을 칸 수")]
         public int triggerInsetInCells = 2;
 
-        [Header("Visual")]
-        public float wallHeight = 4f;
+        [Header("Runtime Bounds")]
         public float wallHeightOffset = 1.5f;
-        public float groundFogOffset = 0.15f;
         public float triggerHeight = 4f;
         public int sortingOrder = 3500;
-        public Sprite fogSprite;
-        public Color unlockedFogColor = new Color(1f, 1f, 1f, 0.85f);
-        public Color lockedFogColor = new Color(1f, 1f, 1f, 0.35f);
 
-        [Header("Fog Reveal")]
-        public bool useInteriorFogCover = true;
-        public Color interiorFogColor = Color.white;
-        [Range(0f, 1f)] public float interiorFogHiddenAlpha = 1f;
-        [Range(0f, 1f)] public float interiorFogRevealedAlpha = 0f;
-        public float fogRevealDuration = 1.4f;
-        public int interiorFogSortingOrderOffset = 3000;
+        [Header("Boss Concealment")]
+        [Tooltip("아레나에 진입하기 전까지 보스 Renderer를 꺼서 미리 노출되지 않게 한다.")]
+        public bool hideBossUntilEncounter = true;
+
+        [Header("Arena Presentation")]
+        public BossArenaPresentationConfig presentation = new BossArenaPresentationConfig();
 
         [Header("Return Portal")]
         public Sprite returnPortalSprite;
         public Vector3 returnPortalScale = Vector3.one;
 
-        [Header("Boss Contact")]
-        public float bossContactDamage = 1f;
-        public float bossContactDamageCooldown = 1f;
-        public float bossContactPushSpeed = 5f;
-
         [Header("Boss")]
         public MidBossDefinition boss = new MidBossDefinition();
+
+        public BossArenaPresentationConfig GetPresentationConfig()
+        {
+            if (presentation == null)
+            {
+                presentation = new BossArenaPresentationConfig();
+            }
+
+            return presentation;
+        }
+    }
+
+    public enum BossArenaEntranceSide
+    {
+        South,
+        North,
+        West,
+        East
+    }
+
+    [System.Serializable]
+    public class BossArenaPresentationConfig
+    {
+        public bool enabled = true;
+
+        [Header("Entrance")]
+        public BossArenaEntranceSide entranceSide = BossArenaEntranceSide.South;
+        [Min(2)] public int entranceWidthInCells = 4;
+        [Min(3)] public int approachLengthInCells = 9;
+
+        [Header("Animation")]
+        [Min(0.1f)] public float pulseSpeed = 1.4f;
+        [Range(0f, 1f)] public float approachOpacity = 0.72f;
+
+        [Header("Rendering")]
+        public Sprite entranceSprite;
+        [Min(0.25f)] public float entranceVisualScale = 1.35f;
+
+        [Header("Biome Wall Tiles")]
+        public Sprite[] wallStraightSprites;
+        public Sprite wallCornerSprite;
+        [Range(1, 4)] public int wallCornerSpanInCells = 2;
+        [Tooltip("NW 코너에 적용할 원본 코너 스프라이트의 Y 회전값")]
+        public float wallCornerBaseYaw = 270f;
+        [Tooltip("코너의 가로·세로 접속 셀을 동일한 직선 벽 조각으로 덮어 연결한다.")]
+        public bool wallUseStraightCornerConnectors;
+
+        public int floorSortingOrder = 40;
+        public int gateSortingOrder = 3490;
+
+        [Header("Optional Palette Override")]
+        [Tooltip("꺼면 장·간·위·폐 기본 팔레트를 사용한다.")]
+        public bool useBiomePalette = true;
+        public Color primaryColor = new Color(0.43f, 0.72f, 0.22f, 1f);
+        public Color accentColor = new Color(0.82f, 0.48f, 0.16f, 1f);
+        public Color lockedColor = new Color(0.92f, 0.12f, 0.08f, 1f);
+        public Color clearedColor = new Color(0.34f, 0.32f, 0.3f, 1f);
     }
 
     [System.Serializable]

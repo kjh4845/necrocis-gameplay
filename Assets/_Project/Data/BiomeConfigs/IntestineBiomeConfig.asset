@@ -43,6 +43,17 @@ MonoBehaviour:
   tileMappings:
   - tileType: 1
     tile: {fileID: 11400000, guid: 11d2f3d12749246c9991e3332a75a100, type: 2}
+  exteriorBackdrop:
+    enabled: 1
+    sprite: {fileID: 21300000, guid: 7d499847c78e406eb61127fc1ddb614c, type: 3}
+    tint: {r: 0.82, g: 0.76, b: 0.72, a: 1}
+    opacity: 0.86
+    cameraClearColor: {r: 0.035, g: 0.015, b: 0.018, a: 1}
+    cameraDistance: 50
+    overscan: 1.22
+    driftAmount: 0.012
+    driftSpeed: 0.07
+    sortingOrder: -32000
   marginLeft: 5
   marginRight: 5
   marginBottom: 10

@@ -116,6 +116,9 @@ namespace Necrocis
         [SerializeField] private float footstepInterval = 0.35f;
         private float nextFootstepTime;
 
+        [Header("Debug")]
+        [SerializeField] private bool enableDebugLogs;
+
         // 공격 애니메이션 상태
         private bool isPlayingAttackAnim = false;
         private float attackAnimEndTime = 0f;                       // ?대룞 以??щ?
@@ -130,6 +133,7 @@ namespace Necrocis
         private Vector3 movement;                  // ?대룞 踰≫꽣
         private Rigidbody rb;                      // 臾쇰━ 而댄룷?뚰듃 (?덉쑝硫??ъ슜)
         private CharacterController characterController; // CharacterController (?덉쑝硫??곗꽑 ?ъ슜)
+        private ProceduralTerrainMotor proceduralTerrainMotor;
         private Collider cachedHitCollider;
         private Health cachedHealth;
         private PlayerStats playerStats;           // ?ㅽ꺈 而댄룷?뚰듃 李몄“
@@ -152,6 +156,8 @@ namespace Necrocis
         public float SkillCooldownReduction => playerStats != null ? playerStats.SkillCooldownReduction : 0f;
         public bool IsDead => playerStats != null && playerStats.IsDead;
         public bool IsMoving => isMoving;
+        public bool IsDashInvincible => isDashing && invincibleDuringDash;
+        public Sprite CurrentVisualSprite => spriteRenderer != null ? spriteRenderer.sprite : null;
         public Collider HitCollider
         {
             get
@@ -167,6 +173,38 @@ namespace Necrocis
 
                 return cachedHitCollider;
             }
+        }
+
+        /// <summary>
+        /// Returns the currently selected class's right-facing run cycle for portal loading UI.
+        /// The loading screen only reads these asset references and never modifies the player animation.
+        /// </summary>
+        public Sprite[] GetLoadingRunAnimationFrames()
+        {
+            if (HasUsableSprites(walkRightSprites))
+            {
+                return walkRightSprites;
+            }
+
+            return HasUsableSprites(idleSprites) ? idleSprites : System.Array.Empty<Sprite>();
+        }
+
+        private static bool HasUsableSprites(Sprite[] sprites)
+        {
+            if (sprites == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < sprites.Length; i++)
+            {
+                if (sprites[i] != null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public Health HealthComponent
@@ -216,7 +254,7 @@ namespace Necrocis
             {
                 billboard = spriteRenderer.gameObject.AddComponent<Billboard>();
             }
-            billboard.SetUpdateMode(Billboard.UpdateMode.Continuous);
+            billboard.SetUpdateMode(Billboard.UpdateMode.Once);
 
             SpriteYSort ySort = spriteRenderer.GetComponent<SpriteYSort>();
             if (ySort == null)
@@ -229,6 +267,11 @@ namespace Necrocis
             // 臾쇰━ 而댄룷?뚰듃 ?뺤씤
             rb = GetComponent<Rigidbody>();
             characterController = GetComponent<CharacterController>();
+            proceduralTerrainMotor = GetComponent<ProceduralTerrainMotor>();
+            if (proceduralTerrainMotor == null)
+            {
+                proceduralTerrainMotor = gameObject.AddComponent<ProceduralTerrainMotor>();
+            }
             EnsurePlayerStats();
             EnsureClassSkillController();
             EnsureDeathScreen();
@@ -262,7 +305,10 @@ namespace Necrocis
             SetAnimation(idleSprites, idleFrameRate);
             ApplyLockedRotation();
 
-            Debug.Log($"[Player] 시작 위치: {transform.position}");
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[Player] 시작 위치: {transform.position}");
+            }
         }
         // ?좊땲???앸챸二쇨린: 留??꾨젅??寃뚯엫?뚮젅??濡쒖쭅???ㅽ뻾?⑸땲??
 
@@ -492,6 +538,50 @@ namespace Necrocis
         // ?媛곸꽑 ?대룞??遺덇??섎㈃ X/Z 異?媛쒕퀎濡??쒕룄 (踰??щ씪?대뵫 ?④낵)
         private bool TryMoveWithHeight(Vector3 moveVector)
         {
+            if (proceduralTerrainMotor != null && proceduralTerrainMotor.HasActiveMap)
+            {
+                Vector3 proceduralCurrentPos = transform.position;
+                Vector3 proceduralTargetPos = proceduralCurrentPos + moveVector;
+                if (proceduralTerrainMotor.CanMove(proceduralCurrentPos, proceduralTargetPos))
+                {
+                    ApplyMove(moveVector);
+                    return true;
+                }
+
+                Vector3 proceduralMoveX = new Vector3(moveVector.x, 0f, 0f);
+                Vector3 proceduralMoveZ = new Vector3(0f, 0f, moveVector.z);
+                if (Mathf.Abs(moveVector.x) >= Mathf.Abs(moveVector.z))
+                {
+                    if (proceduralMoveX.sqrMagnitude > 0f && proceduralTerrainMotor.CanMove(proceduralCurrentPos, proceduralCurrentPos + proceduralMoveX))
+                    {
+                        ApplyMove(proceduralMoveX);
+                        return true;
+                    }
+
+                    if (proceduralMoveZ.sqrMagnitude > 0f && proceduralTerrainMotor.CanMove(proceduralCurrentPos, proceduralCurrentPos + proceduralMoveZ))
+                    {
+                        ApplyMove(proceduralMoveZ);
+                        return true;
+                    }
+                }
+                else
+                {
+                    if (proceduralMoveZ.sqrMagnitude > 0f && proceduralTerrainMotor.CanMove(proceduralCurrentPos, proceduralCurrentPos + proceduralMoveZ))
+                    {
+                        ApplyMove(proceduralMoveZ);
+                        return true;
+                    }
+
+                    if (proceduralMoveX.sqrMagnitude > 0f && proceduralTerrainMotor.CanMove(proceduralCurrentPos, proceduralCurrentPos + proceduralMoveX))
+                    {
+                        ApplyMove(proceduralMoveX);
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             BiomeManager biome = BiomeManager.Active;
             if (biome == null)
             {
@@ -501,7 +591,7 @@ namespace Necrocis
 
             Vector3 currentPos = transform.position;
             Vector3 targetPos = currentPos + moveVector;
-            if (biome.CanMove(currentPos, targetPos))
+            if (CanMoveInBiome(biome, currentPos, targetPos))
             {
                 ApplyMove(moveVector);
                 return true;
@@ -513,13 +603,13 @@ namespace Necrocis
 
             if (Mathf.Abs(moveVector.x) >= Mathf.Abs(moveVector.z))
             {
-                if (moveX.sqrMagnitude > 0f && biome.CanMove(currentPos, currentPos + moveX))
+                if (moveX.sqrMagnitude > 0f && CanMoveInBiome(biome, currentPos, currentPos + moveX))
                 {
                     ApplyMove(moveX);
                     return true;
                 }
 
-                if (moveZ.sqrMagnitude > 0f && biome.CanMove(currentPos, currentPos + moveZ))
+                if (moveZ.sqrMagnitude > 0f && CanMoveInBiome(biome, currentPos, currentPos + moveZ))
                 {
                     ApplyMove(moveZ);
                     return true;
@@ -528,19 +618,26 @@ namespace Necrocis
                 return false;
             }
 
-            if (moveZ.sqrMagnitude > 0f && biome.CanMove(currentPos, currentPos + moveZ))
+            if (moveZ.sqrMagnitude > 0f && CanMoveInBiome(biome, currentPos, currentPos + moveZ))
             {
                 ApplyMove(moveZ);
                 return true;
             }
 
-            if (moveX.sqrMagnitude > 0f && biome.CanMove(currentPos, currentPos + moveX))
+            if (moveX.sqrMagnitude > 0f && CanMoveInBiome(biome, currentPos, currentPos + moveX))
             {
                 ApplyMove(moveX);
                 return true;
             }
 
             return false;
+        }
+
+        private bool CanMoveInBiome(BiomeManager biome, Vector3 currentPosition, Vector3 targetPosition)
+        {
+            bool clearsBossArenaBoundary = proceduralTerrainMotor == null
+                || proceduralTerrainMotor.CanMove(currentPosition, targetPosition);
+            return clearsBossArenaBoundary && biome.CanMove(currentPosition, targetPosition);
         }
 
         public bool TryMoveByWorld(Vector3 displacement)
@@ -593,7 +690,10 @@ namespace Necrocis
 
         private bool IsControlBlocked()
         {
-            return deathHandled || IsDead;
+            return deathHandled
+                || IsDead
+                || Time.timeScale <= Mathf.Epsilon
+                || (proceduralTerrainMotor != null && proceduralTerrainMotor.IsTraversing);
         }
 
         private void SyncDeathState()
@@ -642,6 +742,25 @@ namespace Necrocis
 
         public void ReviveForRespawn()
         {
+            ResetRuntimeAfterDeath();
+
+            Health health = GetComponent<Health>();
+            if (health != null)
+                health.ResetHealth();
+            else
+                playerStats.RuntimeStats.ResetHealthToMax();
+
+            RestoreRuntimeControls();
+        }
+
+        public void ReviveRuntimeStateAfterLoad()
+        {
+            ResetRuntimeAfterDeath();
+            RestoreRuntimeControls();
+        }
+
+        private void ResetRuntimeAfterDeath()
+        {
             deathHandled = false;
             movement = Vector3.zero;
             isMoving = false;
@@ -654,13 +773,10 @@ namespace Necrocis
             }
 
             EnsurePlayerStats();
+        }
 
-            Health health = GetComponent<Health>();
-            if (health != null)
-                health.ResetHealth();
-            else
-                playerStats.RuntimeStats.ResetHealthToMax();
-
+        private void RestoreRuntimeControls()
+        {
             PlayerAttack attack = GetComponent<PlayerAttack>();
             if (attack != null)
                 attack.enabled = true;
@@ -847,7 +963,10 @@ namespace Necrocis
             Sprite[] sprites = isMelee ? GetMeleeSprites() : GetRangedSprites();
             if (sprites == null || sprites.Length == 0)
             {
-                Debug.LogWarning($"[PlayerController] 공격 스프라이트 미할당 - isMelee:{isMelee} dir:{lastMoveDirection}");
+                if (enableDebugLogs)
+                {
+                    Debug.LogWarning($"[PlayerController] 공격 스프라이트 미할당 - isMelee:{isMelee} dir:{lastMoveDirection}");
+                }
                 return;
             }
 
@@ -855,7 +974,10 @@ namespace Necrocis
             SetAnimation(sprites, attackFrameRate > 0f ? attackFrameRate : 12f);
             isPlayingAttackAnim = true;
             attackAnimEndTime = Time.time + duration;
-            Debug.Log($"[PlayerController] 공격 애니 시작: sprites={sprites.Length} s[0]={sprites[0]?.name ?? "NULL"} duration={duration} frameRate={attackFrameRate}");
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[PlayerController] 공격 애니 시작: sprites={sprites.Length} s[0]={sprites[0]?.name ?? "NULL"} duration={duration} frameRate={attackFrameRate}");
+            }
         }
 
         private Sprite[] GetMeleeSprites()
@@ -911,6 +1033,7 @@ namespace Necrocis
                 : DirectionToVector(currentDirection);
             dir.y = 0f;
             dashVelocity = dir * dashSpeed;
+            CombatVfx.PlayDash(transform, spriteRenderer, dir, dashDuration);
 
             yield return new WaitForSeconds(dashDuration);
 
@@ -973,11 +1096,13 @@ namespace Necrocis
         private void OnEnable()
         {
             LevelUpManager.OnJobChanged += HandleJobChanged;
+            LevelUpManager.OnLevelUp += HandleLevelUpVfx;
         }
 
         private void OnDisable()
         {
             LevelUpManager.OnJobChanged -= HandleJobChanged;
+            LevelUpManager.OnLevelUp -= HandleLevelUpVfx;
         }
 
         private void HandleSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
@@ -1016,6 +1141,12 @@ namespace Necrocis
         private void HandleJobChanged(JobType job)
         {
             ApplyJobVisual(job);
+            CombatVfx.PlayJobChange(transform, job);
+        }
+
+        private void HandleLevelUpVfx()
+        {
+            CombatVfx.PlayLevelUp(transform);
         }
 
         private void ApplyJobVisual(JobType job)
@@ -1061,12 +1192,12 @@ namespace Necrocis
                 }
             }
 
-            if (args.CurrentValue < args.PreviousValue)
+            if (enableDebugLogs && args.CurrentValue < args.PreviousValue)
             {
                 float damageTaken = args.PreviousValue - args.CurrentValue;
                 Debug.Log($"[Player] 피해 {damageTaken} 받음 | HP {args.CurrentValue}/{args.MaxValue}");
             }
-            else if (args.CurrentValue > args.PreviousValue)
+            else if (enableDebugLogs && args.CurrentValue > args.PreviousValue)
             {
                 float healed = args.CurrentValue - args.PreviousValue;
                 Debug.Log($"[Player] 회복 {healed} | HP {args.CurrentValue}/{args.MaxValue}");
@@ -1099,7 +1230,10 @@ namespace Necrocis
             playerStats.RuntimeStats.RestoreHealth(reviveHealth);
             Health health = GetComponent<Health>();
             health?.GrantTemporaryInvincibility(0.5f);
-            Debug.Log($"[Player] 분열 재생 발동 | HP {playerStats.CurrentHealth}/{playerStats.MaxHealth}");
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[Player] 분열 재생 발동 | HP {playerStats.CurrentHealth}/{playerStats.MaxHealth}");
+            }
             return true;
         }
         // Die: ??而댄룷?뚰듃???듭떖 濡쒖쭅???ㅽ뻾?⑸땲??
@@ -1136,7 +1270,10 @@ namespace Necrocis
                 StopCoroutine(deathRoutine);
             deathRoutine = StartCoroutine(PlayDeathThenShowGameOver());
 
-            Debug.Log("[Player] HP媛 0???섏뼱 ?щ쭩?덉뒿?덈떎.");
+            if (enableDebugLogs)
+            {
+                Debug.Log("[Player] HP媛 0???섏뼱 ?щ쭩?덉뒿?덈떎.");
+            }
         }
 
         private IEnumerator PlayDeathThenShowGameOver()

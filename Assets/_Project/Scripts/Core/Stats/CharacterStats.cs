@@ -132,6 +132,8 @@ namespace Necrocis
         private readonly Dictionary<CharacterStatType, float> baseStatValues = new Dictionary<CharacterStatType, float>();   // 기본 스탯값
         private readonly Dictionary<CharacterStatType, float> finalStatValues = new Dictionary<CharacterStatType, float>(); // 모디파이어 적용 후 최종값
         private readonly List<CharacterStatModifier> modifiers = new List<CharacterStatModifier>(); // 활성 모디파이어 목록
+        private readonly Dictionary<CharacterStatType, float> previousStatValues = new Dictionary<CharacterStatType, float>();
+        private readonly HashSet<CharacterStatType> recalculationStatTypes = new HashSet<CharacterStatType>();
 
         private float currentHealth; // 현재 HP (최대HP와 별도 관리)
 
@@ -265,7 +267,17 @@ namespace Necrocis
             float previousCurrentHealth = currentHealth;
             float previousMaxHealth = MaxHealth;
 
-            int removedCount = modifiers.RemoveAll(modifier => Equals(modifier.Source, source));
+            int removedCount = 0;
+            for (int i = modifiers.Count - 1; i >= 0; i--)
+            {
+                if (!Equals(modifiers[i].Source, source))
+                {
+                    continue;
+                }
+
+                modifiers.RemoveAt(i);
+                removedCount++;
+            }
             if (removedCount <= 0)
             {
                 return 0;
@@ -330,6 +342,14 @@ namespace Necrocis
             NotifyHealthChanged(previousCurrentHealth, MaxHealth, true);
         }
 
+        public void SetCurrentHealth(float value)
+        {
+            float previousCurrentHealth = currentHealth;
+            float minimumAliveHealth = MaxHealth > 0f ? Mathf.Min(1f, MaxHealth) : 0f;
+            currentHealth = Mathf.Clamp(ToHealthUnits(value), minimumAliveHealth, MaxHealth);
+            NotifyHealthChanged(previousCurrentHealth, MaxHealth, true);
+        }
+
         // 스탯 재계산 후 HP가 최대HP를 초과하지 않도록 클램핑
         private void ClampHealthAfterStatRefresh(float previousCurrentHealth, float previousMaxHealth)
         {
@@ -359,7 +379,7 @@ namespace Necrocis
                 return 0f;
             }
 
-            return Mathf.Max(1f, Mathf.Ceil(value - HealthUnitEpsilon));
+            return Mathf.Max(1f, Mathf.Floor(value + 0.5f + HealthUnitEpsilon));
         }
 
         // HP 변경 이벤트 발행 (force=true면 값 변화 없어도 강제 발행)
@@ -381,34 +401,39 @@ namespace Necrocis
         // 모든 스탯을 기본값 + 모디파이어로 재계산하고, 변경된 스탯에 대해 이벤트 발행
         private void RecalculateAllStats()
         {
-            Dictionary<CharacterStatType, float> previousValues = new Dictionary<CharacterStatType, float>(finalStatValues);
-            HashSet<CharacterStatType> statTypes = new HashSet<CharacterStatType>();
+            previousStatValues.Clear();
+            foreach (KeyValuePair<CharacterStatType, float> pair in finalStatValues)
+            {
+                previousStatValues.Add(pair.Key, pair.Value);
+            }
+
+            recalculationStatTypes.Clear();
 
             foreach (KeyValuePair<CharacterStatType, float> pair in baseStatValues)
             {
-                statTypes.Add(pair.Key);
+                recalculationStatTypes.Add(pair.Key);
             }
 
             for (int i = 0; i < modifiers.Count; i++)
             {
-                statTypes.Add(modifiers[i].StatType);
+                recalculationStatTypes.Add(modifiers[i].StatType);
             }
 
             finalStatValues.Clear();
 
-            foreach (CharacterStatType statType in statTypes)
+            foreach (CharacterStatType statType in recalculationStatTypes)
             {
                 float currentValue = EvaluateStat(statType);
                 finalStatValues[statType] = currentValue;
 
-                float previousValue = previousValues.TryGetValue(statType, out float cachedValue) ? cachedValue : 0f;
+                float previousValue = previousStatValues.TryGetValue(statType, out float cachedValue) ? cachedValue : 0f;
                 if (!Mathf.Approximately(previousValue, currentValue))
                 {
                     StatChanged?.Invoke(this, new CharacterStatChangedEventArgs(statType, previousValue, currentValue));
                 }
             }
 
-            foreach (KeyValuePair<CharacterStatType, float> pair in previousValues)
+            foreach (KeyValuePair<CharacterStatType, float> pair in previousStatValues)
             {
                 if (finalStatValues.ContainsKey(pair.Key) || Mathf.Approximately(pair.Value, 0f))
                 {

@@ -11,6 +11,8 @@ namespace Necrocis
         private const int SpawnPositionAttempts = 10;       // 스폰 위치 탐색 최대 시도 횟수
         private const float MinSpawnSpacing = 0.75f;       // 적 간 최소 거리 (겹침 방지)
         private const float ViewportVisibilityMargin = 0.05f; // 카메라 시야 마진 (밖에서만 리스폰)
+        private const float EvaluationInterval = 0.1f;
+        private const int EvaluationStaggerSlots = 10;
 
         private readonly List<EnemyController> activeEnemies = new List<EnemyController>(); // 현재 활성 적 목록
 
@@ -21,19 +23,47 @@ namespace Necrocis
         private float nextSpawnTime;             // 다음 리스폰 가능 시간
         private bool initializedWave;            // 초기 웨이브 생성 완료 여부
         private int enemyPoolArchetypeId;        // 풀 분류 ID
+        private float nextEvaluationTime;
+        private float activationRadiusOverride = -1f;
+
+        private int GetDifficultyMaxAlive(WorldDifficultyBalance balance)
+        {
+            float multiplier = balance != null ? balance.enemyMaxAlive : 1f;
+            return Mathf.Max(0, Mathf.RoundToInt(config.maxAlive * Mathf.Max(0f, multiplier)));
+        }
+
+        private float GetDifficultyRespawnCooldown(WorldDifficultyBalance balance)
+        {
+            float multiplier = balance != null ? balance.enemyRespawnCooldown : 1f;
+            return config.respawnCooldown * Mathf.Max(0.01f, multiplier);
+        }
+
+        private static WorldDifficultyBalance GetActiveWorldBalance()
+        {
+            BiomeType biome = BiomeManager.Active != null
+                ? BiomeManager.Active.BiomeType
+                : BiomeType.None;
+            return DifficultyBalanceService.GetWorldBalance(biome);
+        }
 
         // 스포너 초기 설정: 이전 적 정리 → 새 설정 적용
-        public void Configure(EnemySpawnRuleConfig config, Vector3 anchorPosition)
+        public void Configure(
+            EnemySpawnRuleConfig config,
+            Vector3 anchorPosition,
+            float activationRadiusOverride = -1f)
         {
             ClearSpawnedEnemies();
 
             this.config = config;
             this.anchorPosition = anchorPosition;
+            this.activationRadiusOverride = activationRadiusOverride;
             playerTransform = null;
             spawnParent = transform.parent;
             nextSpawnTime = 0f;
             initializedWave = false;
             enemyPoolArchetypeId = EnemyController.GetPoolArchetypeId(config);
+            int staggerSlot = Mathf.Abs(GetInstanceID() % EvaluationStaggerSlots);
+            nextEvaluationTime = Time.time + staggerSlot * (EvaluationInterval / EvaluationStaggerSlots);
             enabled = config != null;
         }
 
@@ -46,6 +76,13 @@ namespace Necrocis
                 return;
             }
 
+            float now = Time.time;
+            if (now < nextEvaluationTime)
+            {
+                return;
+            }
+            nextEvaluationTime = now + EvaluationInterval;
+
             CleanupReleasedEnemies();
             EnsurePlayerTransform();
             if (playerTransform == null)
@@ -53,9 +90,17 @@ namespace Necrocis
                 return;
             }
 
+            WorldDifficultyBalance worldBalance = GetActiveWorldBalance();
+            int maxAlive = GetDifficultyMaxAlive(worldBalance);
+            float respawnCooldown = GetDifficultyRespawnCooldown(worldBalance);
+
             // 활성화 범위 밖이면 모든 적 해제
-            float playerDistance = GetPlanarDistance(playerTransform.position, anchorPosition);
-            if (playerDistance > config.activationRadius)
+            float activationRadius = activationRadiusOverride >= 0f
+                ? activationRadiusOverride
+                : config.activationRadius;
+            Vector3 playerDelta = playerTransform.position - anchorPosition;
+            float playerDistanceSqr = playerDelta.x * playerDelta.x + playerDelta.z * playerDelta.z;
+            if (activationRadius < 0f || playerDistanceSqr > activationRadius * activationRadius)
             {
                 if (activeEnemies.Count > 0)
                 {
@@ -67,15 +112,15 @@ namespace Necrocis
 
             if (!initializedWave)
             {
-                if (TrySpawnWave())
+                if (TrySpawnWave(maxAlive))
                 {
                     initializedWave = true;
-                    nextSpawnTime = Time.time + config.respawnCooldown;
+                    nextSpawnTime = Time.time + respawnCooldown;
                 }
                 return;
             }
 
-            if (activeEnemies.Count >= config.maxAlive || Time.time < nextSpawnTime)
+            if (activeEnemies.Count >= maxAlive || Time.time < nextSpawnTime)
             {
                 return;
             }
@@ -85,9 +130,9 @@ namespace Necrocis
                 return;
             }
 
-            if (TrySpawnWave())
+            if (TrySpawnWave(maxAlive))
             {
-                nextSpawnTime = Time.time + config.respawnCooldown;
+                nextSpawnTime = Time.time + respawnCooldown;
             }
         }
 
@@ -136,15 +181,17 @@ namespace Necrocis
         public void NotifyEnemyReleased(EnemyController enemy)
         {
             activeEnemies.Remove(enemy);
-            if (enemy != null && enemy.IsDead && initializedWave && activeEnemies.Count < config.maxAlive)
+            WorldDifficultyBalance worldBalance = GetActiveWorldBalance();
+            int maxAlive = GetDifficultyMaxAlive(worldBalance);
+            if (enemy != null && enemy.IsDead && initializedWave && activeEnemies.Count < maxAlive)
             {
-                nextSpawnTime = Time.time + config.respawnCooldown;
+                nextSpawnTime = Time.time + GetDifficultyRespawnCooldown(worldBalance);
             }
         }
 
-        private bool TrySpawnWave()
+        private bool TrySpawnWave(int maxAlive)
         {
-            while (activeEnemies.Count < config.maxAlive)
+            while (activeEnemies.Count < maxAlive)
             {
                 if (!SpawnEnemy())
                 {
@@ -292,11 +339,5 @@ namespace Necrocis
                 && viewportPoint.y <= 1f + ViewportVisibilityMargin;
         }
 
-        private static float GetPlanarDistance(Vector3 a, Vector3 b)
-        {
-            a.y = 0f;
-            b.y = 0f;
-            return Vector3.Distance(a, b);
-        }
     }
 }

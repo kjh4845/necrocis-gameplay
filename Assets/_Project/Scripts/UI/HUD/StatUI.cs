@@ -17,6 +17,10 @@ namespace Necrocis
         private GameObject uiRoot;     // UI Canvas 루트
         private Text contentText;      // 모든 스탯 정보를 표시하는 단일 Text
         private bool isShowing;        // 현재 표시 중 여부
+        private CharacterStats subscribedStats;
+        private readonly System.Text.StringBuilder statTextBuilder = new System.Text.StringBuilder(384);
+        private string positiveColorHex;
+        private string negativeColorHex;
 
         // 표시할 스탯 순서 정의
         private static readonly CharacterStatType[] displayStats = new CharacterStatType[]
@@ -29,62 +33,78 @@ namespace Necrocis
             CharacterStatType.Magic,
             CharacterStatType.SkillCooldownReduction
         };
-        // 유니티 생명주기: Awake 이후 초기 런타임 설정을 수행합니다.
 
         private void Start()
         {
             BuildUI();
             uiRoot.SetActive(false);
+            TryBindStats();
         }
-        // 유니티 생명주기: 매 프레임 게임플레이 로직을 실행합니다.
 
-        // O키로 토글, 열려 있으면 매 프레임 스탯 갱신
+        private void OnEnable()
+        {
+            LevelUpManager.OnLevelUp += HandleProgressionChanged;
+            LevelUpManager.OnJobSelect += HandleProgressionChanged;
+            LevelUpManager.OnJobChanged += HandleJobChanged;
+            TryBindStats();
+        }
+
+        private void OnDisable()
+        {
+            LevelUpManager.OnLevelUp -= HandleProgressionChanged;
+            LevelUpManager.OnJobSelect -= HandleProgressionChanged;
+            LevelUpManager.OnJobChanged -= HandleJobChanged;
+            UnbindStats();
+        }
+
+        // O키로 창을 토글한다. 수치는 구독한 스탯/진행 이벤트에서 갱신한다.
         private void Update()
         {
+            if (subscribedStats == null)
+            {
+                TryBindStats();
+            }
+
             var input = InputManager.Instance;
             if (input == null) return;
 
             if (input.StatWindowAction.WasPressedThisFrame())
             {
+                AudioManager.Instance?.PlaySFX("StatWindow");
                 if (isShowing)
                     Hide();
                 else
                     Show();
             }
-
-            if (isShowing)
-                RefreshStats(); // 실시간 갱신 (레벨업 중에도 변경사항 반영)
         }
-        // Show: 이 컴포넌트의 핵심 로직을 실행합니다.
 
         private void Show()
         {
+            TryBindStats();
             RefreshStats();
             uiRoot.SetActive(true);
             isShowing = true;
         }
-        // Hide: 이 컴포넌트의 핵심 로직을 실행합니다.
 
         private void Hide()
         {
             uiRoot.SetActive(false);
             isShowing = false;
         }
-        // RefreshStats: 변경 사항을 런타임 객체에 반영합니다.
 
         // 모든 스탯 정보를 StringBuilder로 조합하여 Text에 표시
         // 기본값 대비 증감분을 색상으로 표시 (초록: 증가, 빨강: 감소)
         private void RefreshStats()
         {
-            if (PlayerStats.Instance == null) return;
-
-            var stats = PlayerStats.Instance.RuntimeStats;
+            CharacterStats stats = subscribedStats != null
+                ? subscribedStats
+                : PlayerStats.Instance?.RuntimeStats;
             if (stats == null) return;
 
-            string posHex = ColorUtility.ToHtmlStringRGB(positiveColor);
-            string negHex = ColorUtility.ToHtmlStringRGB(negativeColor);
-
-            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            positiveColorHex ??= ColorUtility.ToHtmlStringRGB(positiveColor);
+            negativeColorHex ??= ColorUtility.ToHtmlStringRGB(negativeColor);
+            System.Text.StringBuilder sb = statTextBuilder;
+            sb.Clear();
 
             // 레벨
             sb.AppendLine($"<color=#FFD933><b>스탯 정보</b></color>");
@@ -103,7 +123,7 @@ namespace Necrocis
             float hpDiff = maxHp - hpBase;
             sb.Append($"체력: {hp:F0}/{maxHp:F0}");
             if (Mathf.Abs(hpDiff) > 0.01f)
-                sb.Append(hpDiff > 0 ? $" <color=#{posHex}>(+{hpDiff:F1})</color>" : $" <color=#{negHex}>({hpDiff:F1})</color>");
+                sb.Append(hpDiff > 0 ? $" <color=#{positiveColorHex}>(+{hpDiff:F1})</color>" : $" <color=#{negativeColorHex}>({hpDiff:F1})</color>");
             sb.AppendLine();
 
             // 나머지 스탯
@@ -118,44 +138,101 @@ namespace Necrocis
                 if (Mathf.Abs(diff) > 0.01f)
                 {
                     if (diff > 0)
-                        sb.Append($" <color=#{posHex}>(+{diff:F1})</color>");
+                        sb.Append($" <color=#{positiveColorHex}>(+{diff:F1})</color>");
                     else
-                        sb.Append($" <color=#{negHex}>({diff:F1})</color>");
+                        sb.Append($" <color=#{negativeColorHex}>({diff:F1})</color>");
                 }
                 sb.AppendLine();
             }
 
             contentText.text = sb.ToString();
         }
-        // GetStatName: 필요한 값을 반환합니다.
 
-        // 스탯 타입 → 한글 이름 변환
-        private string GetStatName(CharacterStatType type)
+        private void TryBindStats()
         {
-            switch (type)
+            CharacterStats currentStats = PlayerStats.Instance?.RuntimeStats;
+            if (currentStats == subscribedStats)
             {
-                case CharacterStatType.MaxHealth:   return "체력";
-                case CharacterStatType.AttackPower:  return "공격력";
-                case CharacterStatType.MoveSpeed:    return "이동속도";
-                case CharacterStatType.AttackSpeed:  return "공격속도";
-                case CharacterStatType.AttackRange:  return "공격 사거리";
-                case CharacterStatType.Magic:        return "마력";
-                case CharacterStatType.SkillCooldownReduction: return "스킬 쿨타임 감소";
-                default:                             return type.ToString();
+                return;
+            }
+
+            UnbindStats();
+            subscribedStats = currentStats;
+            if (subscribedStats == null)
+            {
+                return;
+            }
+
+            subscribedStats.StatChanged += HandleStatChanged;
+            subscribedStats.HealthChanged += HandleHealthChanged;
+        }
+
+        private void UnbindStats()
+        {
+            if (subscribedStats == null)
+            {
+                return;
+            }
+
+            subscribedStats.StatChanged -= HandleStatChanged;
+            subscribedStats.HealthChanged -= HandleHealthChanged;
+            subscribedStats = null;
+        }
+
+        private void HandleStatChanged(CharacterStats _, CharacterStatChangedEventArgs __)
+        {
+            RefreshIfVisible();
+        }
+
+        private void HandleHealthChanged(CharacterStats _, CharacterHealthChangedEventArgs __)
+        {
+            RefreshIfVisible();
+        }
+
+        private void HandleProgressionChanged()
+        {
+            RefreshIfVisible();
+        }
+
+        private void HandleJobChanged(JobType _)
+        {
+            RefreshIfVisible();
+        }
+
+        private void RefreshIfVisible()
+        {
+            if (isShowing)
+            {
+                RefreshStats();
             }
         }
-        // GetJobName: 필요한 값을 반환합니다.
+
+        // 스탯 타입 → 한글 이름 변환
+        private static string GetStatName(CharacterStatType type)
+        {
+            return type switch
+            {
+                CharacterStatType.MaxHealth => "체력",
+                CharacterStatType.AttackPower => "공격력",
+                CharacterStatType.MoveSpeed => "이동속도",
+                CharacterStatType.AttackSpeed => "공격속도",
+                CharacterStatType.AttackRange => "공격 사거리",
+                CharacterStatType.Magic => "마력",
+                CharacterStatType.SkillCooldownReduction => "스킬 쿨타임 감소",
+                _ => type.ToString()
+            };
+        }
 
         // 직업 타입 → 한글 이름 변환
-        private string GetJobName(JobType job)
+        private static string GetJobName(JobType job)
         {
-            switch (job)
+            return job switch
             {
-                case JobType.Warrior: return "전사";
-                case JobType.Mage:    return "마법사";
-                case JobType.Archer:  return "궁수";
-                default:              return job.ToString();
-            }
+                JobType.Warrior => "전사",
+                JobType.Mage => "마법사",
+                JobType.Archer => "궁수",
+                _ => job.ToString()
+            };
         }
 
         // ─────────────────────────────────

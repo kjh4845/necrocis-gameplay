@@ -54,23 +54,81 @@ namespace Necrocis
         {
             if (isLoading)
             {
+                AudioManager.Instance?.PlaySFX("UIInvalid");
                 return;
             }
 
+            AudioManager.Instance?.PlaySFX("ButtonClick");
             StartCoroutine(ReturnToHubRoutine());
         }
 
         private IEnumerator ReturnToHubRoutine()
         {
             isLoading = true;
+
+            if (SaveService.HasActiveSession && SaveService.ActiveDifficulty == GameDifficulty.Hard)
+            {
+                if (!SaveService.TryHandleHardDeath(out string hardDeathError))
+                {
+                    Debug.LogError($"[PlayerDeathScreen] Hard run 초기화 실패: {hardDeathError}");
+                    isLoading = false;
+                    AudioManager.Instance?.PlaySFX("UIInvalid");
+                    yield break;
+                }
+
+                Time.timeScale = 1f;
+                HideImmediate();
+                AsyncOperation mainMenuLoad = GameplaySessionLifecycle.LoadMainMenu();
+                while (mainMenuLoad != null && !mainMenuLoad.isDone)
+                {
+                    yield return null;
+                }
+
+                isLoading = false;
+                yield break;
+            }
+
+            bool restoreNormalProgress = false;
+            if (SaveService.HasActiveSession
+                && SaveService.ActiveDifficulty == GameDifficulty.Normal)
+            {
+                if (!SaveService.TryPrepareNormalDeathRespawn(out string normalDeathError))
+                {
+                    Debug.LogError($"[PlayerDeathScreen] Normal 사망 진행도 보존 실패: {normalDeathError}");
+                    isLoading = false;
+                    AudioManager.Instance?.PlaySFX("UIInvalid");
+                    yield break;
+                }
+
+                restoreNormalProgress = true;
+            }
+
             Time.timeScale = 1f;
             HideImmediate();
             PreparePlayerForRespawn();
 
             GameManager.Instance?.ReturnToHub();
+            if (!restoreNormalProgress
+                && SaveService.HasActiveSession
+                && !SaveService.TrySaveActiveRun(out string normalDeathSaveError))
+            {
+                Debug.LogError($"[PlayerDeathScreen] Normal 사망 저장 실패: {normalDeathSaveError}");
+            }
+
             if (SceneLoader.Instance != null)
             {
                 SceneLoader.Instance.ReturnToHub();
+                while (!string.Equals(
+                           SceneManager.GetActiveScene().name,
+                           SceneLoader.SCENE_HUB,
+                           System.StringComparison.Ordinal))
+                {
+                    yield return null;
+                }
+
+                // Wait one frame for the Hub initializer to finish attaching all
+                // runtime player components before restoring saved modifiers.
+                yield return null;
             }
             else
             {
@@ -79,6 +137,13 @@ namespace Necrocis
                 {
                     yield return null;
                 }
+            }
+
+            if (restoreNormalProgress
+                && !SaveService.TryRestorePendingSession(out _, out string restoreError))
+            {
+                Debug.LogError($"[PlayerDeathScreen] Normal 사망 진행도 복원 실패: {restoreError}");
+                AudioManager.Instance?.PlaySFX("UIInvalid");
             }
 
             isLoading = false;

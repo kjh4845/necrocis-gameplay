@@ -22,6 +22,7 @@
 *.csproj
 *.unityproj
 *.sln
+*.slnx
 *.suo
 *.tmp
 *.user
@@ -74,5 +75,13 @@ Thumbs.db
 # Unity recovery backups
 Assets/_Recovery/
 
-# Local tool output
+# Local development tools
+.claude/
+.codex/
 .playwright-mcp/
+ProjectSettings/VARCOSoundEditorState.asset
+*.wlt
+*.wlt.meta
+
+# Local preview exports
+Exports/

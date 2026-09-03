@@ -1,136 +1,74 @@
 # Necrocis Gameplay
 
-Unity 기반 2.5D 로그라이크 액션 게임 프로토타입입니다. 이 저장소는 이력서/포트폴리오 제출용으로 게임플레이 시스템, 기술스택, 코드 구조를 확인하기 쉽도록 정리한 버전입니다.
+인체의 장기를 배경으로 개발 중인 Unity 2.5D 액션 게임입니다. 허브에서 장·간·위·폐 바이옴에 진입하고, 적을 처치하며 성장한 뒤 각 지역의 보스를 상대합니다.
 
-## 개발 상태
+팀 프로젝트의 게임플레이 코드를 정리한 저장소입니다. 저는 보스 전투, 공통 스탯, 저장과 난이도 처리, 성능 개선, 브랜치 통합을 담당했습니다. 플레이어 스킬, 아이템, 맵, 사운드에는 팀원들이 개발한 내용도 함께 포함되어 있습니다.
 
-- 플레이어 전투, 성장, 적 AI, 보스 패턴, 바이옴 이동, UI 등 핵심 게임 시스템을 구현했습니다.
-- 맵과 바이옴 레이아웃은 아직 미완성 상태이며 계속 제작 중입니다.
-- 현재 포함된 맵, 보스방, 바이옴 배치는 최종 콘텐츠가 아니라 개발 중인 작업물입니다.
-- Unity 생성 캐시와 로컬 IDE 파일은 제외하고, 리뷰에 필요한 소스/설정/에셋 중심으로 정리했습니다.
+## 담당 작업
 
-## 기술스택
+- 장·간·위·폐 보스의 공격 패턴과 페이즈 전환을 구현하고, 보스방 진입·봉쇄·처치 보상·귀환 포털을 공통 흐름으로 연결했습니다.
+- 플레이어와 적의 전투 계산을 분리하고, 레벨업·아이템·상태이상의 스탯 보정 방식을 정리했습니다. 근접·투사체 피격 판정, 무적 시간, 넉백과 사망 처리도 보완했습니다.
+- Normal·Hard별 저장 슬롯과 영구 프로필을 분리했습니다. 새 게임, 이어하기, 사망 후 처리, 저장 파일 백업 복구를 구현했습니다.
+- 청크 로딩과 오브젝트 풀을 정리하고, Non-Alloc 물리 쿼리·컴포넌트 캐싱·공간 해시를 적용해 반복 할당과 전체 적 탐색을 줄였습니다.
+- 메인 메뉴의 보스 처치 진행도 표시와 전투 피드백을 구현하고, 팀 브랜치를 통합하면서 코드 충돌과 Unity 에셋 참조를 점검했습니다.
 
-- Engine: Unity 6000.3.9f1
-- Language: C#
-- Render Pipeline: Universal Render Pipeline 17.3.0
-- Input: Unity Input System 1.18.0
-- UI: Unity UI, TextMesh Pro
-- Map/2D: Unity 2D Sprite, Tilemap, 2D Tilemap Extras
-- Data: ScriptableObject 기반 스탯, 아이템, 적, 바이옴, 보스방 설정
-- Version Control: Git, GitHub
+## 주요 구현
 
-## 게임 시스템
+### 보스 전투
 
-### 플레이어
+각 보스는 별도의 패턴 클래스를 사용합니다. 장 보스는 기생충 소환과 충격파, 간 보스는 혈액 폭탄과 회복 자세, 위 보스는 돌진과 산성 공격·흡입, 폐 보스는 형제 보스와 생존 개체의 광폭화를 처리합니다.
 
-- 이동, 대시, 방향 기반 공격, 카메라 연동 흐름
-- 근거리/원거리 기본 공격 처리
-- 투사체와 이펙트 런타임 풀링
-- 직업별 스킬 컨트롤러와 스킬 쿨타임 UI
-- 체력, 사망 처리, 상태이상, HUD 연동
+보스방의 경계, 입장 트리거, 전투 중 이동 제한, 처치 후 포털 생성은 공통 컨트롤러에서 관리합니다.
 
-주요 코드:
+- [보스 패턴](Assets/_Project/Scripts/Gameplay/Enemies/Bosses/)
+- [보스방 컨트롤러](Assets/_Project/Scripts/World/Biomes/BossArena/MidBossArenaController.cs)
+- [보스·적·바이옴 설정](Assets/_Project/Data/BiomeConfigs/)
 
-- `Assets/_Project/Scripts/Gameplay/Player/Runtime/PlayerController.cs`
-- `Assets/_Project/Scripts/Gameplay/Player/Runtime/PlayerStats.cs`
-- `Assets/_Project/Scripts/Gameplay/Player/Combat/PlayerAttack.cs`
-- `Assets/_Project/Scripts/Gameplay/Player/Skills/PlayerClassSkillController.cs`
+### 스탯과 밸런스
 
-### 성장과 스탯
+공통 스탯 모델에 고정값·비율 보정치를 적용하고, 보정치의 출처를 구분해 아이템이나 버프가 제거될 때 해당 효과만 해제합니다. 플레이어와 적의 피해 계산은 별도 클래스로 나눴습니다.
 
-- 체력, 이동속도, 공격력, 공격속도, 공격 사거리, 마력, 스킬 쿨타임 감소 스탯 관리
-- 레벨업 진행과 스탯 선택 UI 흐름
-- 플레이어 런타임 스탯과 아이템 스탯 보정값 분리
-- 플레이어/적 전투 계산식 분리
-- 직업 선택과 직업별 스킬 해금 흐름
+성장 곡선과 기본 스탯, 난이도 배율, 적 스폰, 보스 패턴 수치는 ScriptableObject 에셋에서 관리합니다.
 
-주요 코드:
+- [공통 스탯 모델](Assets/_Project/Scripts/Core/Stats/CharacterStats.cs)
+- [플레이어 전투 계산](Assets/_Project/Scripts/Gameplay/Player/Combat/PlayerCombatCalculator.cs)
+- [난이도 설정](Assets/_Project/Scripts/Core/Difficulty/)
+- [성장·밸런스 데이터](Assets/_Project/Resources/Balance/)
 
-- `Assets/_Project/Scripts/Gameplay/Player/Progression/LevelUpManager.cs`
-- `Assets/_Project/Scripts/Gameplay/Player/Progression/LevelUpStatCatalog.cs`
-- `Assets/_Project/Scripts/Gameplay/Player/Progression/PlayerClass.cs`
-- `Assets/_Project/Scripts/Core/Stats/CharacterStats.cs`
-- `Assets/_Project/Scripts/Core/Stats/PlayerItemStatDefinitions.cs`
+### 저장과 절차적 맵
 
-### 적과 보스
+JSON 저장 파일은 영구 프로필, Normal 진행, Hard 런으로 구분합니다. Normal 사망 시에는 성장 정보를 유지하고 허브로 복귀하며, Hard 사망 시에는 해당 런을 초기화합니다. 저장 파일이 손상되면 백업 파일을 읽도록 처리했습니다.
 
-- Idle, Wander, Chase, Attack, Charge, Return, Dead 상태 기반 적 FSM
-- 일반 적 스폰, 엘리트 스폰, 적 전투 계산 분리
-- 장, 간, 위, 폐 보스 콘셉트별 패턴 구현
-- 보스방 안개, 가두리, 귀환 포털, 보스 사망 후 정리 흐름
+새 게임을 시작할 때 네 바이옴의 지형 시드를 각각 생성해 저장합니다. 같은 런에서 재입장하거나 이어하기를 하면 저장된 시드로 지형을 다시 생성합니다. 이어하기는 마지막 바이옴의 입구에서 재개하며, 보스 전투 도중의 상태나 플레이어의 정확한 좌표를 복원하는 방식은 아닙니다.
 
-주요 코드:
+- [저장 서비스](Assets/_Project/Scripts/Core/Save/SaveService.cs)
+- [저장 파일 입출력](Assets/_Project/Scripts/Core/Save/SaveFileStore.cs)
+- [절차적 맵 생성](Assets/_Project/Scripts/ProceduralMap/MapGenerator.cs)
+- [맵과 게임플레이 연결](Assets/_Project/Scripts/World/Biomes/Runtime/ProceduralBiomeBridge.cs)
 
-- `Assets/_Project/Scripts/Gameplay/Enemies/Core/EnemyController.cs`
-- `Assets/_Project/Scripts/Gameplay/Enemies/FSM/`
-- `Assets/_Project/Scripts/Gameplay/Enemies/Spawning/EnemySpawner.cs`
-- `Assets/_Project/Scripts/Gameplay/Enemies/Bosses/`
-- `Assets/_Project/Scripts/World/Biomes/BossArena/MidBossArenaController.cs`
+### 성능 개선과 검증
 
-### 월드, 바이옴, 맵
+투사체와 전투 이펙트는 풀에서 재사용합니다. 근접 공격은 재사용 버퍼를 사용하는 물리 쿼리로 처리하고, 적 간 분리 이동은 공간 해시의 주변 셀을 조회합니다. 청크 생성은 코루틴으로 나누어 처리합니다.
 
-- 허브룸과 바이옴 포털 흐름
-- 바이옴 런타임 매니저와 청크/오브젝트 생성 구조
-- 바이옴 설정, 적 스폰 설정, 보스방 설정을 역할별 ScriptableObject로 분리
-- 맵과 바이옴 레이아웃은 아직 미완성이고 제작 중입니다.
+저장, 사망, 메뉴 전환, 접촉 피해, 보스방 경계는 Unity 배치 모드에서 실행하는 스모크 테스트로 확인합니다. 이 테스트가 전체 플레이나 모든 아이템 조합을 검증하는 것은 아닙니다.
 
-주요 코드:
+- [런타임 오브젝트 풀](Assets/_Project/Scripts/Core/Pooling/RuntimePool.cs)
+- [적 이동과 공간 해시](Assets/_Project/Scripts/Gameplay/Enemies/Core/Behaviors/EnemyMovement.cs)
+- [검증 스크립트](Assets/_Project/Editor/)
 
-- `Assets/_Project/Scripts/World/Hub/`
-- `Assets/_Project/Scripts/World/Biomes/Runtime/`
-- `Assets/_Project/Scripts/World/Biomes/Configs/`
-- `Assets/_Project/Data/BiomeConfigs/`
+## 개발 환경
 
-### UI와 연출
+- Unity `6000.3.9f1` / C#
+- Universal Render Pipeline `17.3.0`
+- Input System `1.18.0`
+- Unity UI, TextMesh Pro, Tilemap
+- Git / GitHub
 
-- HP, EXP, 스탯, 스킬 쿨타임 HUD
-- 레벨업 선택, 직업 선택, 사망, 게임오버 UI
-- 카메라, 빌보드, 스프라이트 정렬 보조 컴포넌트
+## 현재 개발 상태
 
-주요 코드:
+현재 버전은 출시 빌드가 아닌 개발 중인 프로젝트입니다.
 
-- `Assets/_Project/Scripts/UI/HUD/`
-- `Assets/_Project/Scripts/UI/LevelUp/`
-- `Assets/_Project/Scripts/UI/Death/`
-- `Assets/_Project/Scripts/Presentation/Camera/`
+- 장·간·위·폐의 지형과 보스 패턴은 포함되어 있습니다. 간·위·폐의 일반 적 스폰 설정과 바이옴별 전투 배치는 작업 중입니다.
+- 부산물 수집 이후의 최종 보스 씬 로드와 엔딩 연결은 아직 구현되지 않았습니다.
 
-## 폴더 구조
-
-```text
-Assets/_Project/
-  Art/             게임 아트, 타일, 머티리얼, 셰이더
-  Audio/           BGM, 플레이어/전투 사운드
-  Data/            ScriptableObject 설정 에셋
-  Docs/            개발 문서
-  Prefabs/         Unity 프리팹
-  Resources/       런타임 리소스와 밸런스 데이터
-  Scenes/          Unity 씬
-  Scripts/         Core, Gameplay, UI, Presentation, World 코드
-  Settings/        프로젝트 전용 설정 에셋
-Packages/          Unity 패키지 manifest/lock
-ProjectSettings/   Unity 프로젝트 설정
-docs/archive/      기존 구현 정리와 리뷰 문서 아카이브
-```
-
-## 파일 정리 기준
-
-- `Library/`, `Temp/`, `Obj/`, `Logs/`, `UserSettings/` 같은 Unity 생성 폴더는 제외했습니다.
-- `.vs/`, `.vscode/`, `.idea/`, `.playwright-mcp/` 같은 로컬 도구/IDE 캐시는 제외했습니다.
-- TextMesh Pro 예제 프로젝트와 Unity 튜토리얼/템플릿 리소스처럼 실행에 필요 없는 샘플 리소스는 제외했습니다.
-- 기존 루트에 있던 긴 작업 정리 문서는 `docs/archive/`로 이동했습니다.
-- Unity 에셋 참조 안정성을 위해 `.meta` 파일은 유지했습니다.
-
-## 실행 방법
-
-1. Unity `6000.3.9f1`을 설치합니다.
-2. Unity Hub에서 이 저장소 폴더를 엽니다.
-3. `Packages/manifest.json` 기준으로 패키지 복원이 끝날 때까지 기다립니다.
-4. `Assets/_Project/Scenes/` 아래 씬을 열어 확인합니다.
-
-## 다음 작업
-
-- 바이옴/맵 레이아웃 완성
-- 보스방 구성과 보스 패턴 밸런싱
-- 레벨업, 직업 선택, 사망, HUD UI 연출 보강
-- 아이템/성장/전투 시스템 검증 케이스 추가
+외부 코드, 폰트, VFX의 저작권과 이용 조건은 각 제작자의 라이선스를 따릅니다. 이 저장소 전체에 하나의 오픈소스 라이선스를 적용한 것은 아닙니다.

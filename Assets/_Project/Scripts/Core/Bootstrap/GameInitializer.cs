@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Necrocis
 {
@@ -19,7 +20,6 @@ namespace Necrocis
         [SerializeField] private PlayerController player;
         [SerializeField] private DontStarveCamera mainCamera;
         [SerializeField] private HubRoom hubRoom;
-        // 유니티 생명주기: 참조를 캐시하고 기본 상태를 초기화합니다.
 
         private void Awake()
         {
@@ -234,7 +234,16 @@ namespace Necrocis
         /// </summary>
         private void Start()
         {
-            AudioManager.Instance?.PlayBGM("InGame");
+            if (SceneManager.GetActiveScene().name == SceneLoader.SCENE_HUB)
+            {
+                AudioManager.Instance?.PlayBGM("Hub");
+                return;
+            }
+
+            if (BiomeManager.Active == null || BiomeManager.Active.BiomeType == BiomeType.None)
+            {
+                AudioManager.Instance?.PlayBGM("InGame");
+            }
         }
 
         public PlayerController GetPlayer()

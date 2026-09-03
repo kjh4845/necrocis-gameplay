@@ -5,7 +5,15 @@ namespace Necrocis
 {
     public partial class EnemyController
     {
-        [SerializeField] private bool logDamageToConsole = true;
+        [SerializeField] private bool logDamageToConsole;
+
+        private float DifficultyAttackCooldown =>
+            config != null
+                ? config.attackCooldown
+                  * Mathf.Max(
+                      0.01f,
+                      DifficultyBalanceService.GetEnemyBalance(IsBossEncounter).attackCooldown)
+                : 0f;
 
         public bool TryPerformAttack(float deltaTime)
         {
@@ -33,30 +41,78 @@ namespace Necrocis
                     ExpandAttackCollider();
                 }
 
-                // NK세포: 방향별 공격 스프라이트가 있으면 flipX 설정
-                bool hasDirectional = config.attackSpritesUp != null && config.attackSpritesUp.Length > 0;
-                if (hasDirectional && spriteRenderer != null)
-                {
-                    int dir = GetAttackDirection();
-                    spriteRenderer.flipX = (dir == 2); // 2 = left (우 스프라이트를 좌우 반전)
-                }
+                UpdateAttackFacing();
 
                 animatedSprite.enabled = true;
+                currentLoopFrames = null;
                 animatedSprite.PlayOneShot(attackFrames, config.attackAnimationSpeed, OnAttackAnimationComplete);
                 return true;
             }
 
             // 공격 애니메이션이 없으면 즉시 데미지 (기존 동작)
             ApplyDamageToPlayer();
-            attackTimer = config.attackCooldown;
+            attackTimer = DifficultyAttackCooldown;
             return false;
+        }
+
+        public bool PlayAttackAnimationOnly()
+        {
+            if (IsDead || config == null || animatedSprite == null || attackAnimPlaying)
+            {
+                return false;
+            }
+
+            Sprite[] attackFrames = GetAttackFrames();
+            if (attackFrames == null || attackFrames.Length == 0)
+            {
+                return false;
+            }
+
+            attackAnimPlaying = true;
+            usingMoveAnimation = false;
+            UpdateAttackFacing();
+            animatedSprite.enabled = true;
+            currentLoopFrames = null;
+            animatedSprite.PlayOneShot(attackFrames, config.attackAnimationSpeed, OnPatternAttackAnimationComplete);
+            return true;
+        }
+
+        public bool IsPatternAnimationPlaying => attackAnimPlaying;
+
+        public bool PlayPatternAnimation(Sprite[] frames, float frameRate, System.Action onComplete = null, bool returnToIdleOnComplete = true)
+        {
+            if (IsDead || animatedSprite == null || frames == null || frames.Length == 0 || attackAnimPlaying)
+            {
+                return false;
+            }
+
+            attackAnimPlaying = true;
+            usingMoveAnimation = false;
+            currentLoopFrames = null;
+            animatedSprite.enabled = true;
+            animatedSprite.PlayOneShot(frames, Mathf.Max(0.01f, frameRate), () =>
+            {
+                attackAnimPlaying = false;
+                if (colliderExpanded)
+                {
+                    RestoreCollider();
+                }
+
+                if (returnToIdleOnComplete)
+                {
+                    SetIdleAnimation();
+                }
+
+                onComplete?.Invoke();
+            });
+            return true;
         }
 
 
         private void OnAttackAnimationComplete()
         {
             attackAnimPlaying = false;
-            attackTimer = config.attackCooldown;
+            attackTimer = DifficultyAttackCooldown;
 
             // 공격 범위 내 플레이어에게 데미지
             ApplyDamageToPlayer();
@@ -68,6 +124,17 @@ namespace Necrocis
             }
 
             // 대기 애니메이션으로 복귀
+            SetIdleAnimation();
+        }
+
+        private void OnPatternAttackAnimationComplete()
+        {
+            attackAnimPlaying = false;
+            if (colliderExpanded)
+            {
+                RestoreCollider();
+            }
+
             SetIdleAnimation();
         }
 
@@ -90,9 +157,13 @@ namespace Necrocis
                 return;
             }
 
-            Health playerHealth = player.GetComponent<Health>();
+            Health playerHealth = player.HealthComponent;
             if (playerHealth == null) return;
 
+            if (!ignoreMidBossArenaRestriction)
+            {
+                AudioManager.Instance?.PlaySFX("EnemyAttack");
+            }
             playerHealth.TakeDamage(damage, this);
         }
 
@@ -133,11 +204,7 @@ namespace Necrocis
                 return false;
             }
 
-            Collider playerCollider = player.GetComponent<Collider>();
-            if (playerCollider == null)
-            {
-                playerCollider = player.GetComponentInChildren<Collider>();
-            }
+            Collider playerCollider = player.HitCollider;
 
             if (playerCollider == null || !playerCollider.enabled)
             {
@@ -206,6 +273,10 @@ namespace Necrocis
             }
 
             EnemyProjectile proj = EnemyProjectile.Acquire(spawnPos, projSprite, config.projectileScale);
+            if (!ignoreMidBossArenaRestriction)
+            {
+                AudioManager.Instance?.PlaySFX("EnemyAttack");
+            }
             proj.Launch(dir, damage, config.projectileSpeed, config.projectileLifeTime, this);
         }
 
@@ -227,6 +298,7 @@ namespace Necrocis
             if (appliedDamage > 0f)
             {
                 DamageTaken?.Invoke(this, appliedDamage);
+                CombatVfx.PlayEnemyHit(this, appliedDamage, stats.IsDead);
             }
 
             if (logDamageToConsole && config != null && !config.isElite)
@@ -237,6 +309,11 @@ namespace Necrocis
 
             if (stats.IsDead)
             {
+                if (!ignoreMidBossArenaRestriction)
+                {
+                    AudioManager.Instance?.PlaySFX("EnemyDeath");
+                }
+
                 if (PlayerController.Instance != null)
                 {
                     PlayerItemCombatEffects itemEffects = PlayerController.Instance.GetComponent<PlayerItemCombatEffects>();
@@ -246,12 +323,19 @@ namespace Necrocis
                 RaiseDefeated();
                 ChangeState(EnemyDeadState.Instance);
             }
+            else if (appliedDamage > 0f && !ignoreMidBossArenaRestriction)
+            {
+                AudioManager.Instance?.PlaySFX("EnemyHit");
+            }
         }
 
         public void GrantExp()
         {
             if (config == null) return;
-            LevelUpManager.AddEnemyKillExp();
+            float multiplier = DifficultyBalanceService
+                .GetEnemyBalance(IsBossEncounter)
+                .experienceReward;
+            LevelUpManager.AddEnemyKillExp(config.expReward, multiplier);
 
             // 엘리트 스포너에 킬 알림
             if (EliteSpawner.Instance != null && !config.isElite)
@@ -301,16 +385,46 @@ namespace Necrocis
 
         private int GetAttackDirection()
         {
-            if (playerTransform == null) return 1;
+            if (playerTransform == null) return facingDirection;
 
             Vector3 toPlayer = playerTransform.position - GetCurrentPosition();
             toPlayer.y = 0f;
 
-            if (Mathf.Abs(toPlayer.x) >= Mathf.Abs(toPlayer.z))
+            if (toPlayer.sqrMagnitude <= 0.000001f)
             {
-                return toPlayer.x >= 0f ? 1 : 2; // 우 / 좌
+                return facingDirection;
             }
-            return toPlayer.z >= 0f ? 0 : 3; // 상 / 하
+
+            return GetPlanarDirection(toPlayer);
+        }
+
+        private void UpdateAttackFacing()
+        {
+            if (spriteRenderer == null || config == null)
+            {
+                return;
+            }
+
+            facingDirection = GetAttackDirection();
+            bool hasDirectional = config.attackSpritesUp != null && config.attackSpritesUp.Length > 0;
+            if (hasDirectional)
+            {
+                ApplyFacingFlip();
+                return;
+            }
+
+            PlayerController player = PlayerController.Instance;
+            if (player == null)
+            {
+                return;
+            }
+
+            ApplyFacingFlip();
+            Vector3 toPlayer = player.transform.position - GetCurrentPosition();
+            if (Mathf.Abs(toPlayer.x) > 0.01f)
+            {
+                spriteRenderer.flipX = toPlayer.x < 0f;
+            }
         }
 
         public void CancelAttackAnimation()

@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Tilemaps;
+using System.Collections;
 using System.Collections.Generic;
 
 namespace Necrocis
@@ -16,6 +17,7 @@ namespace Necrocis
         private readonly List<BiomeObjectRuleConfig> runtimeRules = new List<BiomeObjectRuleConfig>();
         private readonly List<EnemySpawnRuleConfig> runtimeEnemyRules = new List<EnemySpawnRuleConfig>();
         private MidBossArenaController midBossArenaController;
+        private BiomeExteriorBackdrop exteriorBackdrop;
 
         /// <summary>
         /// 현재 바이옴 설정 반환 (엘리트 몹 분열 시 적 설정 검색용)
@@ -24,6 +26,11 @@ namespace Necrocis
 
         protected override void Awake()
         {
+            if (config != null)
+            {
+                config = DifficultyBalanceService.ResolveBiomeConfig(config.biomeType, config);
+            }
+
             if (config == null)
             {
                 Debug.LogError("[ConfigurableBiomeManager] BiomeConfig가 없습니다.");
@@ -51,7 +58,37 @@ namespace Necrocis
         protected override void Start()
         {
             base.Start();
+            exteriorBackdrop = BiomeExteriorBackdrop.Create(transform, config.exteriorBackdrop);
             TryCreateMidBossArena();
+            PlayBiomeBgm();
+
+            if (biomeType == BiomeType.Lung)
+            {
+                StartCoroutine(PlayLungAmbientImpacts());
+            }
+        }
+
+        private void PlayBiomeBgm()
+        {
+            string bgmKey = biomeType switch
+            {
+                BiomeType.Intestine => "IntestineMap",
+                BiomeType.Liver => "LiverMap",
+                BiomeType.Stomach => "StomachMap",
+                BiomeType.Lung => "LungMap",
+                _ => "InGame",
+            };
+
+            AudioManager.Instance?.PlayBGM(bgmKey);
+        }
+
+        private IEnumerator PlayLungAmbientImpacts()
+        {
+            while (true)
+            {
+                yield return new WaitForSeconds(Random.Range(25f, 50f));
+                AudioManager.Instance?.PlaySFX("LungAmbientImpact");
+            }
         }
 
         protected override void InitializeNoise()
@@ -135,7 +172,11 @@ namespace Necrocis
                 return 0f;
             }
 
-            return density;
+            WorldDifficultyBalance world = DifficultyBalanceService.GetWorldBalance(BiomeType);
+            float multiplier = rule.category == SpawnCategory.EnemySpawner
+                ? world?.enemySpawnerDensity ?? 1f
+                : world?.sceneObjectDensity ?? 1f;
+            return density * Mathf.Max(0f, multiplier);
         }
 
         protected override void BuildObjectRules()
@@ -154,6 +195,10 @@ namespace Necrocis
             if (eliteSpawner == null)
                 eliteSpawner = gameObject.AddComponent<EliteSpawner>();
             eliteSpawner.ClearConfigs();
+            eliteSpawner.ConfigureKillInterval(
+                config.enemySpawnConfig != null
+                    ? config.enemySpawnConfig.NormalKillsPerElite
+                    : 10);
 
             int allMask = 0;
             for (int i = 0; i < config.regions.Count; i++)
@@ -201,6 +246,8 @@ namespace Necrocis
                         eliteSpawner.RegisterEliteConfig(ruleConfig);
                         continue;
                     }
+
+                    eliteSpawner.RegisterNormalEnemyConfig(ruleConfig);
 
                     int mask = BuildRegionMask(ruleConfig.allowedRegions, allMask);
                     int salt = ruleConfig.poissonSalt != 0 ? ruleConfig.poissonSalt : 600 + i;
@@ -326,13 +373,17 @@ namespace Necrocis
                 ? midBossArenaConfig.centerGrid
                 : new Vector2Int(mapWidth / 2, mapHeight / 2);
 
-            int halfWidth = Mathf.Max(4, midBossArenaConfig.arenaSize.x / 2);
-            int halfHeight = Mathf.Max(4, midBossArenaConfig.arenaSize.y / 2);
+            int arenaWidth = Mathf.Max(8, midBossArenaConfig.arenaSize.x);
+            int arenaHeight = Mathf.Max(8, midBossArenaConfig.arenaSize.y);
+            int minX = center.x - arenaWidth / 2;
+            int minY = center.y - arenaHeight / 2;
+            int maxX = minX + arenaWidth - 1;
+            int maxY = minY + arenaHeight - 1;
 
-            return gridX >= center.x - halfWidth
-                && gridX <= center.x + halfWidth
-                && gridY >= center.y - halfHeight
-                && gridY <= center.y + halfHeight;
+            return gridX >= minX
+                && gridX <= maxX
+                && gridY >= minY
+                && gridY <= maxY;
         }
 
         private void SpawnConfiguredObject(BiomeObjectRuleConfig rule, ChunkSpawnRecord record, Chunk chunk)
@@ -454,7 +505,7 @@ namespace Necrocis
                 }
                 billboard.enabled = true;
                 billboard.ResetBaseLocalPosition(obj.transform.localPosition);
-                billboard.SetUpdateMode(Billboard.UpdateMode.Continuous);
+                billboard.SetUpdateMode(Billboard.UpdateMode.Once);
             }
             else if (billboard != null)
             {
